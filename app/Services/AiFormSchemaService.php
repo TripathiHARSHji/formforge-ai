@@ -9,7 +9,8 @@ use Throwable;
 
 class AiFormSchemaService
 {
-    private const MAX_ATTEMPTS = 3;
+    private const MAX_ATTEMPTS = 2;
+    private const MAX_FIELDS = 15;
 
     /** @var string[] */
     private array $defaultModelFallbacks = [
@@ -164,7 +165,7 @@ class AiFormSchemaService
         try {
             $response = Http::acceptJson()
                 ->withHeaders(['x-goog-api-key' => $apiKey])
-                ->timeout(25)
+                ->timeout(15)
                 ->withOptions(['verify' => $this->resolveSslVerifyOption()])
                 ->get('https://generativelanguage.googleapis.com/v1beta/models');
 
@@ -249,7 +250,7 @@ class AiFormSchemaService
 
         $client = Http::acceptJson()
             ->withHeaders(['x-goog-api-key' => $apiKey])
-            ->timeout(40)
+            ->timeout(20)
             ->withOptions(['verify' => $this->resolveSslVerifyOption()]);
 
         $response = $client->post($url, [
@@ -268,6 +269,7 @@ class AiFormSchemaService
                 ],
                 'generationConfig' => [
                     'temperature' => 0.2,
+                    'maxOutputTokens' => 1024,
                     'responseMimeType' => 'application/json',
                 ],
             ]);
@@ -363,6 +365,8 @@ class AiFormSchemaService
             '  ]',
             '}',
             'Rules:',
+            '- Return at most 15 fields in total.',
+            '- Prefer concise forms and avoid unnecessary fields.',
             '- Ensure every non-heading field has unique key.',
             '- Use sensible labels, placeholders, and validation.',
             '- Never invent unsupported field types.',
@@ -374,6 +378,9 @@ class AiFormSchemaService
         $lines = [
             'User instruction:',
             $prompt,
+            '',
+            'Hard limit: return no more than 15 fields.',
+            'Goal: keep the schema concise and fast to generate.',
         ];
 
         if (is_array($existingSchema)) {
@@ -447,6 +454,10 @@ class AiFormSchemaService
         $description = trim((string) ($schema['description'] ?? $existingSchema['description'] ?? ''));
 
         $rawFields = is_array($schema['fields'] ?? null) ? $schema['fields'] : [];
+        if (count($rawFields) > self::MAX_FIELDS) {
+            $rawFields = array_slice($rawFields, 0, self::MAX_FIELDS);
+        }
+
         $fields = [];
         $usedKeys = [];
 
