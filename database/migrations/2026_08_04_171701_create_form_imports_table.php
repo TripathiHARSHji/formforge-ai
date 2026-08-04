@@ -6,20 +6,22 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('form_imports', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('form_id')->nullable()->constrained()->nullOnDelete();
+            $table->string('source_type');
+            $table->string('file_path');
+            $table->string('status')->default('queued');
+            $table->json('summary')->nullable();
+            $table->json('metadata')->nullable();
             $table->timestamps();
+
+            $table->index(['status', 'created_at']);
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('form_imports');

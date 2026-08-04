@@ -6,20 +6,23 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('ai_generation_logs', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('form_id')->nullable()->constrained()->nullOnDelete();
+            $table->text('prompt');
+            $table->string('model')->nullable();
+            $table->unsignedInteger('tokens_used')->nullable();
+            $table->unsignedInteger('latency_ms')->nullable();
+            $table->string('status')->default('pending');
+            $table->json('metadata')->nullable();
             $table->timestamps();
+
+            $table->index(['status', 'created_at']);
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('ai_generation_logs');
