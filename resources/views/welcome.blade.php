@@ -35,6 +35,18 @@
 
 <div class="max-w-5xl mx-auto px-8 py-12">
 
+    @if(session('status'))
+        <div class="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+            {{ session('status') }}
+        </div>
+    @endif
+
+    @if($errors->has('file'))
+        <div class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {{ $errors->first('file') }}
+        </div>
+    @endif
+
     {{-- Hero --}}
     <div class="text-center mb-12">
         <h1 class="text-5xl font-bold text-slate-800">Build forms in seconds</h1>
@@ -70,16 +82,30 @@
                 <div class="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 text-lg">&#128196;</div>
                 <h2 class="text-lg font-semibold">Import document</h2>
             </div>
-            <form action="{{ route('imports.store') }}" method="POST" enctype="multipart/form-data">
+            <form id="import-form" action="{{ route('imports.store') }}" method="POST" enctype="multipart/form-data">
                 @csrf
-                <p class="text-sm text-slate-500 mb-3">Upload a .docx or .xlsx file to extract a form schema automatically.</p>
+                <p class="text-sm text-slate-500 mb-2">Upload a .docx or .xlsx file to extract a form schema automatically.</p>
+                <p class="text-xs text-slate-400 mb-3">Excel supported layouts: (1) structured columns like Section, Question, Type, Required, Options, Validation, and (2) plain header-row fallback. You will review mapping before form creation.</p>
                 <input type="file" name="file" class="w-full text-sm text-slate-600 file:mr-3 file:rounded-full file:border-0 file:bg-violet-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-violet-700 hover:file:bg-violet-100" accept=".docx,.xlsx" required />
-                <button class="mt-3 rounded-full bg-violet-600 hover:bg-violet-700 px-5 py-2 text-sm font-medium text-white transition">Import</button>
+                <button id="import-submit" class="mt-3 rounded-full bg-violet-600 hover:bg-violet-700 px-5 py-2 text-sm font-medium text-white transition">Import</button>
             </form>
         </div>
 
     </div>
 </div>
+
+<script>
+const importForm = document.getElementById('import-form');
+const importSubmit = document.getElementById('import-submit');
+
+if (importForm && importSubmit) {
+    importForm.addEventListener('submit', () => {
+        importSubmit.disabled = true;
+        importSubmit.textContent = 'Uploading...';
+        importSubmit.classList.add('opacity-70', 'cursor-not-allowed');
+    });
+}
+</script>
 
 </body>
 </html>

@@ -1,4 +1,8 @@
 *
 !private/
 !public/
+!imports/
+!imports/samples/
+!imports/samples/*.docx
+!imports/samples/*.xlsx
 !.gitignore

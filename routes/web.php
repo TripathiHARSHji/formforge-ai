@@ -23,3 +23,7 @@ Route::post('/ai/generate', [AiController::class, 'generate'])->name('ai.generat
 Route::get('/ai/logs/{log}', [AiController::class, 'status'])->name('ai.status');
 
 Route::post('/imports', [ImportController::class, 'store'])->name('imports.store');
+Route::get('/imports/{import}/status', [ImportController::class, 'statusPage'])->name('imports.status.page');
+Route::get('/imports/{import}/status.json', [ImportController::class, 'status'])->name('imports.status');
+Route::get('/imports/{import}/preview', [ImportController::class, 'preview'])->name('imports.preview');
+Route::post('/imports/{import}/commit', [ImportController::class, 'commit'])->name('imports.commit');
