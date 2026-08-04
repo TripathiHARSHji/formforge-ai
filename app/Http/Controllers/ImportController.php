@@ -36,8 +36,6 @@ class ImportController extends Controller
             'source_type' => $type,
             'file_path' => $path,
             'status' => 'completed',
-            'summary' => ['parsed_fields' => 1],
-            'metadata' => ['original_name' => $request->file('file')->getClientOriginalName()],
         ]);
 
         return redirect()->route('forms.show', $form)->with('status', 'Import completed.');
