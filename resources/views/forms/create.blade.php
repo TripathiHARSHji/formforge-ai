@@ -184,6 +184,8 @@ const AUTO_AI = @json($autoAi ?? false);
 const AI_GENERATE_URL = @json(route('ai.generate'));
 const AI_STATUS_URL_TEMPLATE = @json(route('ai.status', ['log' => '__LOG__']));
 const CSRF_TOKEN = @json(csrf_token());
+const AI_POLL_INTERVAL_MS = 1500;
+const AI_MAX_WAIT_MS = 90000;
 
 // ── Field type registry ────────────────────────────────────────
 const FT = {
@@ -375,8 +377,19 @@ function startAiPolling(logId) {
         S.aiPolling = null;
     }
 
+    const startedAt = Date.now();
+
     const poll = async () => {
         try {
+            if (Date.now() - startedAt > AI_MAX_WAIT_MS) {
+                clearInterval(S.aiPolling);
+                S.aiPolling = null;
+                setAiBusy(false);
+                setAiStatus('AI status: timeout', 'warn');
+                showToast('AI is taking too long. Start queue worker: php artisan queue:work');
+                return;
+            }
+
             const resp = await fetch(aiStatusUrl(logId), { headers: { 'Accept': 'application/json' } });
             const payload = await resp.json();
 
@@ -433,7 +446,7 @@ function startAiPolling(logId) {
     };
 
     poll();
-    S.aiPolling = setInterval(poll, 1500);
+    S.aiPolling = setInterval(poll, AI_POLL_INTERVAL_MS);
 }
 
 function makeField(type) {
