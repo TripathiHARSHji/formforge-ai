@@ -14,10 +14,15 @@ return new class extends Migration
             $table->text('description')->nullable();
             $table->json('schema')->nullable();
             $table->uuid('public_uuid')->unique();
-            $table->string('status')->default('draft');
+            $table->string('status', 32)->default('draft');
             $table->timestamps();
 
+            // Lookups by UUID (public form URL resolution)
+            // $table->unique('public_uuid') — already declared above
+            // Listing forms by status + recency
             $table->index(['status', 'created_at']);
+            // Full-text search on title
+            $table->fullText('title');
         });
     }
 

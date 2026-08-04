@@ -10,6 +10,7 @@ Route::get('/', function () {
 });
 
 Route::post('/forms', [FormController::class, 'store'])->name('forms.store');
+Route::get('/forms/create', fn() => view('forms.create'))->name('forms.create');
 Route::get('/forms/{form}', [FormController::class, 'show'])->name('forms.show');
 Route::get('/forms/{publicUuid}/fill', [FormController::class, 'fill'])->name('forms.fill');
 Route::post('/forms/{publicUuid}/submit', [FormController::class, 'submit'])->name('forms.submit');
