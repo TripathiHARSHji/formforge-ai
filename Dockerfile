@@ -12,8 +12,6 @@ COPY . .
 
 RUN composer install --optimize-autoloader --no-interaction --no-scripts
 
-RUN php artisan optimize:clear
-
 EXPOSE 8080
 
 CMD php artisan serve --host=0.0.0.0 --port=${PORT:-8080}
