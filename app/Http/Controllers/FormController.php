@@ -4,13 +4,92 @@ namespace App\Http\Controllers;
 
 use App\Models\Form;
 use App\Models\FormSubmission;
+use App\Models\FormVersion;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Throwable;
 
 class FormController extends Controller
 {
+    public function index(Request $request)
+    {
+        $search = trim((string) $request->input('search', ''));
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = 12;
+
+        if ($this->databaseIsAvailable()) {
+            try {
+                $query = Form::query()->withCount('submissions')->orderByDesc('created_at');
+                if ($search !== '') {
+                    $query->where('title', 'like', '%' . $search . '%');
+                }
+
+                $forms = $query->paginate($perPage)->withQueryString();
+
+                return view('forms.index', compact('forms', 'search'));
+            } catch (Throwable) {
+                // Fall through to file-backed listing.
+            }
+        }
+
+        $store = $this->loadStore();
+        $rows = collect($store['forms'] ?? [])->map(function (array $form) use ($store): array {
+            $submissionCount = count(array_filter(
+                $store['submissions'] ?? [],
+                fn (array $submission) => (int) ($submission['form_id'] ?? 0) === (int) ($form['id'] ?? 0)
+            ));
+
+            $form['submissions_count'] = $submissionCount;
+
+            return $form;
+        });
+
+        if ($search !== '') {
+            $rows = $rows->filter(fn (array $form) => str_contains(strtolower((string) ($form['title'] ?? '')), strtolower($search)));
+        }
+
+        /** @var Collection<int, array> $rows */
+        $rows = $rows->sortByDesc('created_at')->values();
+        $total = $rows->count();
+        $items = $rows->forPage($page, $perPage)->values();
+
+        $forms = new LengthAwarePaginator(
+            $items,
+            $total,
+            $perPage,
+            $page,
+            ['path' => $request->url(), 'query' => $request->query()]
+        );
+
+        return view('forms.index', compact('forms', 'search'));
+    }
+
+    public function create(Request $request)
+    {
+        return view('forms.create', [
+            'editingForm' => null,
+            'initialAiPrompt' => (string) $request->query('ai_prompt', ''),
+            'autoAi' => $request->boolean('auto_ai', false),
+        ]);
+    }
+
+    public function edit($formIdentifier, Request $request)
+    {
+        $form = $this->resolveForm($formIdentifier);
+        if (! $form) {
+            abort(404);
+        }
+
+        return view('forms.create', [
+            'editingForm' => $form,
+            'initialAiPrompt' => (string) $request->query('ai_prompt', ''),
+            'autoAi' => $request->boolean('auto_ai', false),
+        ]);
+    }
+
     public function store(Request $request)
     {
         $data = $request->validate([
@@ -27,6 +106,50 @@ class FormController extends Controller
             : $this->persistWithFallback($data, $normalizedSchema);
 
         return redirect()->route('forms.show', ['form' => $form->id])->with('status', 'Form created.');
+    }
+
+    public function update(Request $request, $formIdentifier)
+    {
+        $form = $this->resolveForm($formIdentifier);
+        if (! $form) {
+            abort(404);
+        }
+
+        $data = $request->validate([
+            'title' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'schema' => 'required',
+        ]);
+
+        $schema = $this->decodeSchema($data['schema']);
+        $normalizedSchema = $this->normalizeSchema($schema);
+
+        if ($this->databaseIsAvailable()) {
+            try {
+                $dbForm = Form::find($form->id);
+                if ($dbForm) {
+                    FormVersion::create([
+                        'form_id' => $dbForm->id,
+                        'schema' => $dbForm->schema ?? ['fields' => []],
+                        'note' => 'Manual edit',
+                    ]);
+
+                    $dbForm->update([
+                        'title' => $data['title'],
+                        'description' => $data['description'] ?? null,
+                        'schema' => $normalizedSchema,
+                    ]);
+
+                    return redirect()->route('forms.show', ['form' => $dbForm->id])->with('status', 'Form updated.');
+                }
+            } catch (Throwable) {
+                // Fall through to file-backed update.
+            }
+        }
+
+        $updatedForm = $this->updateFallbackForm((int) $form->id, $data, $normalizedSchema);
+
+        return redirect()->route('forms.show', ['form' => $updatedForm->id])->with('status', 'Form updated.');
     }
 
     public function show($formIdentifier, Request $request)
@@ -171,7 +294,7 @@ class FormController extends Controller
         return redirect()->route('forms.fill', ['publicUuid' => $form->public_uuid])->with('status', 'Submission received.');
     }
 
-    public function export($formIdentifier)
+    public function export($formIdentifier, Request $request)
     {
         $form = $this->resolveForm($formIdentifier);
 
@@ -183,9 +306,49 @@ class FormController extends Controller
             ? FormSubmission::where('form_id', $form->id)->get()
             : $this->loadFallbackSubmissions($form->id);
 
+        $fields = $form->schema['fields'] ?? [];
+
+        if (strtolower((string) $request->query('format', 'json')) !== 'csv') {
+            $submissions = [];
+            foreach ($rows as $index => $row) {
+                $rowId = is_array($row) ? ($row['id'] ?? ($index + 1)) : ($row->id ?? ($index + 1));
+                $createdAt = is_array($row)
+                    ? ($row['created_at'] ?? null)
+                    : ($row->created_at ? $row->created_at->toIso8601String() : null);
+                $answers = is_array($row) ? ($row['answers'] ?? []) : ($row->answers ?? []);
+
+                $submissions[] = [
+                    'id' => $rowId,
+                    'submitted_at' => $createdAt,
+                    'answers' => $answers,
+                ];
+            }
+
+            $payload = [
+                'form' => [
+                    'id' => $form->id,
+                    'title' => $form->title,
+                    'description' => $form->description,
+                    'public_uuid' => $form->public_uuid,
+                    'status' => $form->status,
+                ],
+                'schema' => $form->schema,
+                'fields' => $fields,
+                'submissions_count' => count($submissions),
+                'submissions' => $submissions,
+            ];
+
+            return response()->json(
+                $payload,
+                200,
+                ['Content-Disposition' => 'attachment; filename="' . Str::slug($form->title) . '-submissions.json"'],
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+        }
+
         $csv = fopen('php://temp', 'r+');
         $headers = ['id', 'submitted_at'];
-        foreach ($form->schema['fields'] ?? [] as $field) {
+        foreach ($fields as $field) {
             $headers[] = $field['key'] ?? $field['id'];
         }
         fputcsv($csv, $headers);
@@ -197,7 +360,7 @@ class FormController extends Controller
             $answers = is_array($row) ? ($row['answers'] ?? []) : ($row->answers ?? []);
 
             $values = [$rowId, $createdAt];
-            foreach ($form->schema['fields'] ?? [] as $field) {
+            foreach ($fields as $field) {
                 $key = $field['key'] ?? $field['id'];
                 $values[] = $answers[$key] ?? '';
             }
@@ -261,6 +424,28 @@ class FormController extends Controller
             'created_at' => now()->toIso8601String(),
         ];
         $this->saveStore($store);
+    }
+
+    private function updateFallbackForm(int $formId, array $data, array $schema): object
+    {
+        $store = $this->loadStore();
+
+        foreach ($store['forms'] as $index => $form) {
+            if ((int) ($form['id'] ?? 0) !== $formId) {
+                continue;
+            }
+
+            $store['forms'][$index]['title'] = $data['title'];
+            $store['forms'][$index]['description'] = $data['description'] ?? null;
+            $store['forms'][$index]['schema'] = $schema;
+            $store['forms'][$index]['updated_at'] = now()->toIso8601String();
+
+            $this->saveStore($store);
+
+            return (object) $store['forms'][$index];
+        }
+
+        abort(404);
     }
 
     private function getSubmissionState(object $form): array
@@ -375,17 +560,52 @@ class FormController extends Controller
     private function normalizeSchema(array $schema): array
     {
         $schema['fields'] = $schema['fields'] ?? [];
+        $supportedTypes = ['text','textarea','number','email','phone','date','file','rating','dropdown','radio','checkbox','heading','url'];
+        $typeAliases = [
+            'tel' => 'phone',
+            'telephone' => 'phone',
+            'select' => 'dropdown',
+            'short_text' => 'text',
+            'long_text' => 'textarea',
+            'multiple_choice' => 'radio',
+            'multi_select' => 'checkbox',
+            'attachment' => 'file',
+            'section' => 'heading',
+        ];
+        $seenKeys = [];
+
         foreach ($schema['fields'] as $index => $field) {
-            $key = $this->normalizeFieldKey(
-                (string) ($field['key'] ?? $field['id'] ?? ''),
-                $index + 1
-            );
+            $rawType = strtolower(trim((string) ($field['type'] ?? 'text')));
+            $type = $typeAliases[$rawType] ?? $rawType;
+            if (! in_array($type, $supportedTypes, true)) {
+                $type = 'text';
+            }
+
+            $key = '';
+            if ($type !== 'heading') {
+                $key = $this->normalizeFieldKey(
+                    (string) ($field['key'] ?? $field['id'] ?? $field['label'] ?? ''),
+                    $index + 1
+                );
+
+                $base = $key;
+                $n = 2;
+                while (isset($seenKeys[strtolower($key)])) {
+                    $key = $base . '_' . $n;
+                    $n++;
+                }
+                $seenKeys[strtolower($key)] = true;
+            }
 
             $schema['fields'][$index]['id']       = $field['id'] ?? ('field_' . ($index + 1));
-            $schema['fields'][$index]['key']      = $key;
-            $schema['fields'][$index]['type']     = $field['type'] ?? 'text';
+            if ($type !== 'heading') {
+                $schema['fields'][$index]['key'] = $key;
+            } else {
+                unset($schema['fields'][$index]['key']);
+            }
+            $schema['fields'][$index]['type']     = $type;
             $schema['fields'][$index]['label']    = $field['label'] ?? $field['lable'] ?? $key;
-            $schema['fields'][$index]['required'] = (bool) ($field['required'] ?? false);
+            $schema['fields'][$index]['required'] = $type === 'heading' ? false : (bool) ($field['required'] ?? false);
             // Preserve optional properties verbatim
             foreach (['placeholder','helpText','defaultValue','options','maxRating','validation'] as $prop) {
                 if (array_key_exists($prop, $field)) {
@@ -399,7 +619,11 @@ class FormController extends Controller
 
     private function normalizeFieldKey(string $value, int $index): string
     {
-        $key = trim($value);
+        $key = Str::of($value)
+            ->lower()
+            ->replace(['-', ' '], '_')
+            ->slug('_')
+            ->value();
 
         return $key !== '' ? $key : 'field_' . $index;
     }

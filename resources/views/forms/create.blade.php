@@ -33,6 +33,8 @@
         .toggle-track.on{background:#6366f1}
         .toggle-thumb{width:1rem;height:1rem;background:#fff;border-radius:50%;position:absolute;top:.125rem;left:.125rem;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
         .toggle-track.on .toggle-thumb{transform:translateX(1rem)}
+        @keyframes ff-spin{to{transform:rotate(360deg)}}
+        .ff-spinner{width:2.5rem;height:2.5rem;border:4px solid #d1d5db;border-top-color:#10b981;border-radius:9999px;animation:ff-spin .9s linear infinite}
     </style>
 </head>
 <body class="h-screen flex flex-col bg-slate-100 overflow-hidden text-slate-800 select-none">
@@ -43,11 +45,14 @@
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
         FormForge AI
     </a>
+    <a href="{{ route('forms.index') }}" class="text-xs text-slate-600 hover:text-indigo-700 px-2 py-1 rounded border border-slate-200 hover:border-indigo-300 transition">All Forms</a>
     <div class="w-px h-5 bg-slate-200 shrink-0"></div>
     <input id="hdr-title" placeholder="Untitled Form" class="text-sm font-semibold text-slate-700 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-400 focus:outline-none px-1 py-0.5 w-56 transition select-text" />
+    <span id="ai-status" class="text-xs text-slate-500"></span>
     <div class="flex-1"></div>
+    <button id="btn-ai" type="button" class="text-xs text-emerald-700 px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 font-medium transition">Generate with AI</button>
     <button id="btn-json" type="button" class="text-xs text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 font-mono transition">{ } Schema</button>
-    <button id="btn-save" type="button" class="text-sm bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-1.5 rounded-full font-semibold transition shadow-sm">Create Form</button>
+    <button id="btn-save" type="button" class="text-sm bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-1.5 rounded-full font-semibold transition shadow-sm">{{ !empty($editingForm) ? 'Save Changes' : 'Create Form' }}</button>
 </header>
 
 <!-- ═══ 3-PANEL BODY ══════════════════════════════════════════ -->
@@ -130,9 +135,39 @@
     <div id="toast-msg" class="px-5 py-3 rounded-xl shadow-2xl text-sm font-medium text-white"></div>
 </div>
 
+<!-- AI processing overlay -->
+<div id="ai-loader" class="fixed inset-0 z-[70] hidden items-center justify-center bg-slate-950/45 px-4">
+    <div class="w-full max-w-sm rounded-2xl bg-white shadow-2xl border border-slate-100 p-6 text-center">
+        <div class="ff-spinner mx-auto"></div>
+        <p class="mt-4 text-sm font-semibold text-slate-800">AI is generating your form...</p>
+        <p id="ai-loader-text" class="mt-1 text-xs text-slate-500">Waiting in queue...</p>
+    </div>
+</div>
+
+<!-- AI prompt panel -->
+<div id="ai-panel" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40 px-4">
+    <div class="w-full max-w-xl rounded-2xl bg-white shadow-2xl overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+            <h3 class="font-semibold text-slate-800 flex-1">Generate / Edit with AI</h3>
+            <button id="btn-ai-close" type="button" class="text-slate-400 hover:text-slate-700">✕</button>
+        </div>
+        <div class="p-5 space-y-3">
+            <p class="text-xs text-slate-500">Describe the form or edit request. Example: add an emergency contact section, make phone required, translate labels to Hindi.</p>
+            <textarea id="ai-prompt" rows="5" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-400 focus:bg-white outline-none transition resize-none" placeholder="Internship application with education history, skills and resume upload"></textarea>
+            <div class="flex justify-end gap-2">
+                <button id="btn-ai-cancel" type="button" class="px-4 py-2 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Cancel</button>
+                <button id="btn-ai-run" type="button" class="px-4 py-2 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Run AI</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Hidden POST form -->
-<form id="submit-form" action="{{ route('forms.store') }}" method="POST" class="hidden">
+<form id="submit-form" action="{{ !empty($editingForm) ? route('forms.update', ['form' => $editingForm->id]) : route('forms.store') }}" method="POST" class="hidden">
     @csrf
+    @if(!empty($editingForm))
+        @method('PUT')
+    @endif
     <input type="hidden" name="title" id="sub-title">
     <input type="hidden" name="description" id="sub-desc">
     <input type="hidden" name="schema" id="sub-schema">
@@ -142,6 +177,13 @@
 /* ================================================================
    FormForge AI — Form Builder
    ================================================================ */
+
+const EDITING_FORM = @json($editingForm);
+const INITIAL_AI_PROMPT = @json($initialAiPrompt ?? '');
+const AUTO_AI = @json($autoAi ?? false);
+const AI_GENERATE_URL = @json(route('ai.generate'));
+const AI_STATUS_URL_TEMPLATE = @json(route('ai.status', ['log' => '__LOG__']));
+const CSRF_TOKEN = @json(csrf_token());
 
 // ── Field type registry ────────────────────────────────────────
 const FT = {
@@ -166,6 +208,7 @@ const S = {
     fields: [],
     selId: null,
     tab: 'basic',
+    aiPolling: null,
 };
 
 // ── Utils ──────────────────────────────────────────────────────
@@ -182,6 +225,215 @@ function showToast(msg, ok=false) {
     t.style.pointerEvents = 'auto';
     clearTimeout(t._tid);
     t._tid = setTimeout(() => { t.style.opacity='0'; t.style.pointerEvents='none'; }, 3200);
+}
+
+function setAiStatus(text, color = 'slate') {
+    const el = $('ai-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'text-xs ' + (
+        color === 'error'
+            ? 'text-red-600'
+            : color === 'ok'
+                ? 'text-emerald-600'
+                : color === 'warn'
+                    ? 'text-amber-700'
+                    : 'text-slate-500'
+    );
+}
+
+function setAiBusy(isBusy, message = 'Waiting in queue...') {
+    const overlay = $('ai-loader');
+    const text = $('ai-loader-text');
+    const btnAi = $('btn-ai');
+
+    if (btnAi) {
+        btnAi.disabled = !!isBusy;
+        btnAi.classList.toggle('opacity-60', !!isBusy);
+        btnAi.classList.toggle('cursor-not-allowed', !!isBusy);
+    }
+
+    if (!overlay || !text) return;
+
+    if (isBusy) {
+        text.textContent = message;
+        overlay.classList.remove('hidden');
+        overlay.classList.add('flex');
+    } else {
+        overlay.classList.add('hidden');
+        overlay.classList.remove('flex');
+        text.textContent = 'Waiting in queue...';
+    }
+}
+
+function shortErrorMessage(msg) {
+    const text = String(msg || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= 180) return text;
+    return text.slice(0, 180) + '...';
+}
+
+function openAiPanel(seedPrompt = '') {
+    $('ai-panel').classList.remove('hidden');
+    $('ai-panel').classList.add('flex');
+    $('ai-prompt').value = seedPrompt || '';
+    $('ai-prompt').focus();
+}
+
+function closeAiPanel() {
+    $('ai-panel').classList.add('hidden');
+    $('ai-panel').classList.remove('flex');
+}
+
+function aiStatusUrl(logId) {
+    return AI_STATUS_URL_TEMPLATE.replace('__LOG__', String(logId));
+}
+
+function applySchemaToCanvas(parsed) {
+    if (!Array.isArray(parsed.fields)) {
+        showToast('AI response is missing fields array.');
+        return;
+    }
+
+    if (parsed.title) {
+        $('form-title').value = parsed.title;
+        $('hdr-title').value = parsed.title;
+    }
+    if (parsed.description != null) {
+        $('form-desc').value = parsed.description;
+    }
+
+    S.fields = parsed.fields.map(f => ({
+        id: f.id || uid(),
+        type: f.type || 'text',
+        label: f.label ?? '',
+        key: f.key ?? '',
+        placeholder: f.placeholder ?? '',
+        helpText: f.helpText ?? '',
+        defaultValue: f.defaultValue ?? '',
+        required: !!f.required,
+        options: Array.isArray(f.options) ? f.options : [],
+        maxRating: f.maxRating ?? 5,
+        validation: f.validation ?? {minLength:'',maxLength:'',min:'',max:'',pattern:'',fileTypes:'',maxFileSize:''},
+    }));
+    S.selId = null;
+    renderCanvas();
+    renderConfig();
+}
+
+async function runAi(promptText) {
+    const prompt = String(promptText || '').trim();
+    if (!prompt) {
+        showToast('Enter an AI prompt first.');
+        return;
+    }
+
+    setAiStatus('Queueing AI job...');
+    setAiBusy(true, 'Queueing AI job...');
+    $('btn-ai-run').disabled = true;
+
+    try {
+        const resp = await fetch(AI_GENERATE_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': CSRF_TOKEN,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({
+                prompt,
+                form_id: EDITING_FORM?.id || null,
+            }),
+        });
+
+        const payload = await resp.json();
+        if (!resp.ok) {
+            throw new Error(payload.message || 'AI queue request failed.');
+        }
+
+        const logId = payload.log_id;
+        if (!logId) {
+            throw new Error('Missing AI log ID.');
+        }
+
+        closeAiPanel();
+        showToast('AI job queued. Generating schema...', true);
+        setAiStatus('AI status: queued');
+        setAiBusy(true, 'AI is queued. Waiting for worker...');
+        startAiPolling(logId);
+    } catch (err) {
+        setAiBusy(false);
+        setAiStatus('AI status: failed', 'error');
+        showToast(err.message || 'AI request failed.');
+    } finally {
+        $('btn-ai-run').disabled = false;
+    }
+}
+
+function startAiPolling(logId) {
+    if (S.aiPolling) {
+        clearInterval(S.aiPolling);
+        S.aiPolling = null;
+    }
+
+    const poll = async () => {
+        try {
+            const resp = await fetch(aiStatusUrl(logId), { headers: { 'Accept': 'application/json' } });
+            const payload = await resp.json();
+
+            if (!resp.ok) {
+                throw new Error(payload.message || 'Unable to fetch AI status.');
+            }
+
+            setAiStatus('AI status: ' + payload.status);
+
+            if (payload.status === 'queued') {
+                setAiBusy(true, 'AI is queued. Waiting for worker...');
+            } else if (payload.status === 'processing') {
+                setAiBusy(true, 'AI is processing your prompt...');
+            }
+
+            if (payload.status === 'completed') {
+                clearInterval(S.aiPolling);
+                S.aiPolling = null;
+                setAiBusy(false);
+
+                if (!payload.schema || !Array.isArray(payload.schema.fields)) {
+                    setAiStatus('AI status: invalid schema', 'error');
+                    showToast('AI finished but returned invalid schema.');
+                    return;
+                }
+
+                applySchemaToCanvas(payload.schema);
+
+                if (payload.fallback_used) {
+                    const firstError = Array.isArray(payload.retry_errors) ? payload.retry_errors[0] : null;
+                    setAiStatus('AI status: completed with fallback', 'warn');
+                    showToast(firstError ? shortErrorMessage(firstError) : 'AI used fallback due to generation error.');
+                } else {
+                    setAiStatus('AI status: completed', 'ok');
+                    showToast('AI schema applied to canvas.', true);
+                }
+            }
+
+            if (payload.status === 'failed') {
+                clearInterval(S.aiPolling);
+                S.aiPolling = null;
+                setAiBusy(false);
+                setAiStatus('AI status: failed', 'error');
+                const firstError = Array.isArray(payload.retry_errors) ? payload.retry_errors[0] : null;
+                showToast(payload.error || firstError || 'AI generation failed.');
+            }
+        } catch (err) {
+            clearInterval(S.aiPolling);
+            S.aiPolling = null;
+            setAiBusy(false);
+            setAiStatus('AI status: failed', 'error');
+            showToast(err.message || 'AI polling failed.');
+        }
+    };
+
+    poll();
+    S.aiPolling = setInterval(poll, 1500);
 }
 
 function makeField(type) {
@@ -574,6 +826,17 @@ $('form-title').addEventListener('input',()=>{ $('hdr-title').value=$('form-titl
 $('hdr-title').addEventListener('input',()=>{ $('form-title').value=$('hdr-title').value; syncJSON(); });
 $('form-desc').addEventListener('input', syncJSON);
 
+// AI panel
+$('btn-ai').addEventListener('click', () => openAiPanel(INITIAL_AI_PROMPT));
+$('btn-ai-close').addEventListener('click', closeAiPanel);
+$('btn-ai-cancel').addEventListener('click', closeAiPanel);
+$('btn-ai-run').addEventListener('click', () => runAi($('ai-prompt').value));
+$('ai-panel').addEventListener('click', (e) => {
+    if (e.target.id === 'ai-panel') {
+        closeAiPanel();
+    }
+});
+
 // Save
 $('btn-save').addEventListener('click',()=>{
     const title = $('form-title').value.trim();
@@ -598,7 +861,23 @@ $('btn-save').addEventListener('click',()=>{
 // ── Boot ───────────────────────────────────────────────────────
 renderPalette();
 initPaletteSortable();
+
+if (EDITING_FORM) {
+    $('form-title').value = EDITING_FORM.title || '';
+    $('hdr-title').value = EDITING_FORM.title || '';
+    $('form-desc').value = EDITING_FORM.description || '';
+
+    if (EDITING_FORM.schema && Array.isArray(EDITING_FORM.schema.fields)) {
+        applySchemaToCanvas(EDITING_FORM.schema);
+    }
+}
+
 renderCanvas();
+
+if (INITIAL_AI_PROMPT && AUTO_AI) {
+    openAiPanel(INITIAL_AI_PROMPT);
+    runAi(INITIAL_AI_PROMPT);
+}
 </script>
 </body>
 </html>
