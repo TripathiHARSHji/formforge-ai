@@ -2,67 +2,71 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\GenerateFormSchemaJob;
 use App\Models\AiGenerationLog;
-use App\Models\Form;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
+use Throwable;
 
 class AiController extends Controller
 {
-    public function generate(Request $request)
+    public function generate(Request $request): JsonResponse
     {
         $data = $request->validate([
             'prompt' => 'required|string',
             'form_id' => 'nullable|exists:forms,id',
         ]);
 
-        $schema = $this->buildSchemaFromPrompt($data['prompt']);
+        try {
+            $log = AiGenerationLog::create([
+                'form_id' => $data['form_id'] ?? null,
+                'prompt' => $data['prompt'],
+                'model' => config('services.gemini.model', 'gemini-2.5-flash'),
+                'status' => 'queued',
+                'metadata' => [
+                    'mode' => empty($data['form_id']) ? 'create' : 'edit',
+                ],
+            ]);
 
-        $form = null;
-        if (! empty($data['form_id'])) {
-            $form = Form::find($data['form_id']);
-            if ($form) {
-                $form->update(['schema' => $schema]);
-            }
+            GenerateFormSchemaJob::dispatch($log->id);
+
+            return response()->json([
+                'message' => 'AI generation queued.',
+                'log_id' => $log->id,
+                'status' => $log->status,
+                'poll_url' => route('ai.status', ['log' => $log->id]),
+            ], 202);
+        } catch (Throwable $e) {
+            return response()->json([
+                'message' => 'Unable to queue AI generation.',
+                'error' => $e->getMessage(),
+            ], 500);
         }
-
-        AiGenerationLog::create([
-            'form_id' => $form?->id,
-            'prompt' => $data['prompt'],
-            'model' => 'demo-gpt',
-            'tokens_used' => 120,
-            'latency_ms' => 250,
-            'status' => 'completed',
-            'metadata' => ['source' => 'heuristic'],
-        ]);
-
-        return response()->json(['schema' => $schema, 'message' => 'Schema generated.']);
     }
 
-    private function buildSchemaFromPrompt(string $prompt): array
+    public function status(AiGenerationLog $log): JsonResponse
     {
-        $lower = Str::lower($prompt);
-        $fields = [];
+        $metadata = is_array($log->metadata) ? $log->metadata : [];
+        $retryErrors = array_map(fn (mixed $msg) => $this->sanitizeForUi((string) $msg), $metadata['retry_errors'] ?? []);
 
-        if (Str::contains($lower, 'email')) {
-            $fields[] = ['id' => 'email', 'type' => 'email', 'label' => 'Email', 'key' => 'email', 'required' => true];
-        }
+        return response()->json([
+            'log_id' => $log->id,
+            'status' => $log->status,
+            'model' => $log->model,
+            'tokens_used' => $log->tokens_used,
+            'latency_ms' => $log->latency_ms,
+            'schema' => $metadata['schema'] ?? null,
+            'error' => isset($metadata['error']) ? $this->sanitizeForUi((string) $metadata['error']) : null,
+            'attempts' => $metadata['attempts'] ?? null,
+            'fallback_used' => $metadata['fallback_used'] ?? false,
+            'retry_errors' => $retryErrors,
+            'form_id' => $log->form_id,
+            'updated_at' => optional($log->updated_at)?->toIso8601String(),
+        ]);
+    }
 
-        if (Str::contains($lower, 'phone')) {
-            $fields[] = ['id' => 'phone', 'type' => 'phone', 'label' => 'Phone', 'key' => 'phone', 'required' => false];
-        }
-
-        if (Str::contains($lower, 'resume') || Str::contains($lower, 'upload')) {
-            $fields[] = ['id' => 'resume', 'type' => 'file', 'label' => 'Resume', 'key' => 'resume', 'required' => false];
-        }
-
-        if (empty($fields)) {
-            $fields[] = ['id' => 'name', 'type' => 'text', 'label' => 'Name', 'key' => 'name', 'required' => true];
-        }
-
-        return [
-            'title' => Str::title(str_replace(['with', 'and', 'the'], '', $prompt)),
-            'fields' => $fields,
-        ];
+    private function sanitizeForUi(string $message): string
+    {
+        return preg_replace('/([?&]key=)[^\s&]+/i', '$1***', $message) ?? $message;
     }
 }
