@@ -17,13 +17,19 @@
             </svg>
             FormForge AI
         </div>
-        <a href="{{ route('forms.create') }}"
-           class="flex items-center gap-2 rounded-full bg-indigo-600 hover:bg-indigo-700 px-5 py-2 text-sm font-medium text-white transition">
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-            </svg>
-            Create Form
-        </a>
+        <div class="flex items-center gap-2">
+            <a href="{{ route('forms.index') }}"
+               class="flex items-center gap-2 rounded-full border border-slate-300 hover:bg-slate-50 px-5 py-2 text-sm font-medium text-slate-700 transition">
+                All Forms
+            </a>
+            <a href="{{ route('forms.create') }}"
+               class="flex items-center gap-2 rounded-full bg-indigo-600 hover:bg-indigo-700 px-5 py-2 text-sm font-medium text-white transition">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                </svg>
+                Create Form
+            </a>
+        </div>
     </div>
 </header>
 
@@ -51,9 +57,9 @@
                 <div class="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 text-lg">&#10024;</div>
                 <h2 class="text-lg font-semibold">Generate with AI</h2>
             </div>
-            <form action="{{ route('ai.generate') }}" method="POST">
-                @csrf
-                <textarea name="prompt" rows="3" placeholder="Describe your form… e.g. Internship application with phone and resume upload" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-400 focus:bg-white outline-none transition resize-none" required></textarea>
+            <form action="{{ route('forms.create') }}" method="GET">
+                <textarea name="ai_prompt" rows="3" placeholder="Describe your form… e.g. Internship application with phone and resume upload" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-400 focus:bg-white outline-none transition resize-none" required></textarea>
+                <input type="hidden" name="auto_ai" value="1">
                 <button class="mt-3 rounded-full bg-emerald-600 hover:bg-emerald-700 px-5 py-2 text-sm font-medium text-white transition">Generate</button>
             </form>
         </div>

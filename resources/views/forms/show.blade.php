@@ -17,7 +17,10 @@
         <a href="{{ route('forms.fill', ['publicUuid'=>$form->public_uuid]) }}" target="_blank" class="inline-flex items-center gap-1.5 rounded-full border border-indigo-300 text-indigo-700 hover:bg-indigo-50 px-4 py-2 text-sm font-medium transition">
             &#128279; Open public URL
         </a>
-        <a href="{{ route('forms.export', ['form'=>$form->id]) }}" class="inline-flex items-center gap-1.5 rounded-full border border-slate-300 text-slate-700 hover:bg-slate-100 px-4 py-2 text-sm font-medium transition">
+        <a href="{{ route('forms.export', ['form'=>$form->id]) }}" class="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 text-emerald-700 hover:bg-emerald-50 px-4 py-2 text-sm font-medium transition">
+            &#8659; Export JSON
+        </a>
+        <a href="{{ route('forms.export', ['form'=>$form->id, 'format' => 'csv']) }}" class="inline-flex items-center gap-1.5 rounded-full border border-slate-300 text-slate-700 hover:bg-slate-100 px-4 py-2 text-sm font-medium transition">
             &#8659; Export CSV
         </a>
     </div>
