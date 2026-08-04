@@ -29,7 +29,7 @@ class FormController extends Controller
         return redirect()->route('forms.show', ['form' => $form->id])->with('status', 'Form created.');
     }
 
-    public function show($formIdentifier)
+    public function show($formIdentifier, Request $request)
     {
         $form = $this->resolveForm($formIdentifier);
 
@@ -37,7 +37,14 @@ class FormController extends Controller
             abort(404);
         }
 
-        return view('forms.show', compact('form'));
+        $search      = $request->input('search', '');
+        $currentPage = max(1, (int) $request->input('page', 1));
+        $perPage     = 20;
+
+        [$submissions, $totalSubmissions] = $this->loadPagedSubmissions($form, $search, $currentPage, $perPage);
+        $totalPages = max(1, (int) ceil($totalSubmissions / $perPage));
+
+        return view('forms.show', compact('form', 'submissions', 'totalSubmissions', 'currentPage', 'totalPages', 'search'));
     }
 
     public function fill(string $publicUuid)
@@ -48,7 +55,9 @@ class FormController extends Controller
             abort(404);
         }
 
-        return view('forms.fill', compact('form'));
+        $submissionState = $this->getSubmissionState($form);
+
+        return view('forms.fill', compact('form', 'submissionState'));
     }
 
     public function submit(Request $request, string $publicUuid)
@@ -59,25 +68,99 @@ class FormController extends Controller
             abort(404);
         }
 
-        $schema = $form->schema;
-        $answers = $request->input('answers', []);
+        $rules    = [];
+        $messages = [];
 
-        foreach ($schema['fields'] ?? [] as $field) {
-            $key = $field['key'] ?? null;
-            if (! $key) {
+        foreach ($form->schema['fields'] ?? [] as $field) {
+            $type = $field['type'] ?? 'text';
+            $key  = $field['key'] ?? null;
+            if (! $key || $type === 'heading') {
                 continue;
             }
-            if (($field['required'] ?? false) && empty($answers[$key] ?? null)) {
-                return back()->withErrors(["answers.$key" => 'This field is required.']);
+
+            $v        = $field['validation'] ?? [];
+            $required = ! empty($field['required']);
+            $inputKey = "answers.{$key}";
+
+            $fieldRules = [$required ? 'required' : 'nullable'];
+
+            switch ($type) {
+                case 'email':
+                    $fieldRules[] = 'email';
+                    break;
+                case 'number':
+                    $fieldRules[] = 'numeric';
+                    if (isset($v['min']) && $v['min'] !== '') {
+                        $fieldRules[] = 'min:' . $v['min'];
+                    }
+                    if (isset($v['max']) && $v['max'] !== '') {
+                        $fieldRules[] = 'max:' . $v['max'];
+                    }
+                    break;
+                case 'file':
+                    $fieldRules = [$required ? 'required' : 'nullable', 'file'];
+                    if (! empty($v['fileTypes'])) {
+                        $fieldRules[] = 'mimes:' . preg_replace('/\s+/', '', $v['fileTypes']);
+                    }
+                    if (! empty($v['maxFileSize'])) {
+                        $fieldRules[] = 'max:' . ((int) $v['maxFileSize'] * 1024);
+                    }
+                    $inputKey = "answers_files.{$key}";
+                    break;
+                case 'checkbox':
+                    $fieldRules[] = 'array';
+                    break;
+                case 'url':
+                    $fieldRules[] = 'url';
+                    break;
+            }
+
+            if (! empty($v['minLength']) && ! in_array($type, ['number', 'file'])) {
+                $fieldRules[] = 'min:' . $v['minLength'];
+            }
+            if (! empty($v['maxLength']) && ! in_array($type, ['number', 'file'])) {
+                $fieldRules[] = 'max:' . $v['maxLength'];
+            }
+            if (! empty($v['pattern']) && ! in_array($type, ['file'])) {
+                $fieldRules[] = 'regex:/' . str_replace('/', '\/', $v['pattern']) . '/';
+            }
+
+            $rules[$inputKey] = implode('|', $fieldRules);
+            $messages["{$inputKey}.required"]  = ($field['label'] ?? $key) . ' is required.';
+            $messages["{$inputKey}.email"]     = ($field['label'] ?? $key) . ' must be a valid email address.';
+            $messages["{$inputKey}.numeric"]   = ($field['label'] ?? $key) . ' must be a number.';
+            $messages["{$inputKey}.url"]       = ($field['label'] ?? $key) . ' must be a valid URL.';
+        }
+
+        // Merge file inputs into answers for validation
+        $mergedInput = $request->all();
+        if ($request->hasFile('answers')) {
+            $mergedInput['answers_files'] = $request->file('answers');
+        }
+        $validator = validator($mergedInput, $rules, $messages);
+        if ($validator->fails()) {
+            return back()->withErrors($validator)->withInput();
+        }
+
+        $answers = $request->input('answers', []);
+        // Store uploaded file paths
+        foreach ($form->schema['fields'] ?? [] as $field) {
+            if (($field['type'] ?? '') === 'file') {
+                $key = $field['key'] ?? null;
+                if ($key && $request->hasFile("answers.{$key}")) {
+                    try {
+                        $path = $request->file("answers.{$key}")->store('submissions', 'public');
+                        $answers[$key] = $path;
+                    } catch (Throwable) {
+                        $answers[$key] = $request->file("answers.{$key}")->getClientOriginalName();
+                    }
+                }
             }
         }
 
         if ($this->databaseIsAvailable()) {
             try {
-                FormSubmission::create([
-                    'form_id' => $form->id,
-                    'answers' => $answers,
-                ]);
+                FormSubmission::create(['form_id' => $form->id, 'answers' => $answers]);
             } catch (Throwable) {
                 $this->persistSubmissionFallback($form, $answers);
             }
@@ -85,7 +168,7 @@ class FormController extends Controller
             $this->persistSubmissionFallback($form, $answers);
         }
 
-        return redirect()->back()->with('status', 'Submission received.');
+        return redirect()->route('forms.fill', ['publicUuid' => $form->public_uuid])->with('status', 'Submission received.');
     }
 
     public function export($formIdentifier)
@@ -180,6 +263,65 @@ class FormController extends Controller
         $this->saveStore($store);
     }
 
+    private function getSubmissionState(object $form): array
+    {
+        $submissions = $this->loadSubmissionsForForm($form);
+        $latestSubmission = $submissions[0] ?? null;
+
+        return [
+            'has_submission' => ! empty($submissions),
+            'submission_count' => count($submissions),
+            'latest_submission' => $latestSubmission,
+        ];
+    }
+
+    private function loadSubmissionsForForm(object $form): array
+    {
+        if ($this->databaseIsAvailable()) {
+            try {
+                $rows = FormSubmission::where('form_id', $form->id)
+                    ->orderByDesc('created_at')
+                    ->get();
+
+                if ($rows->isNotEmpty()) {
+                    return $rows->all();
+                }
+            } catch (Throwable) {
+                // Fall through to the file-backed store.
+            }
+        }
+
+        return $this->loadFallbackSubmissions($form->id);
+    }
+
+    private function loadPagedSubmissions(object $form, string $search, int $page, int $perPage): array
+    {
+        if ($this->databaseIsAvailable()) {
+            try {
+                $query = FormSubmission::where('form_id', $form->id)->orderByDesc('created_at');
+                if ($search !== '') {
+                    $query->whereRaw('LOWER(CAST(answers AS CHAR)) LIKE ?', ['%' . strtolower($search) . '%']);
+                }
+                $total = (clone $query)->count();
+                $rows  = $query->skip(($page - 1) * $perPage)->take($perPage)->get();
+
+                return [$rows, $total];
+            } catch (Throwable) {
+                // Fall through.
+            }
+        }
+
+        // File fallback
+        $all = $this->loadFallbackSubmissions($form->id);
+        if ($search !== '') {
+            $all = array_values(array_filter($all, fn ($s) => str_contains(strtolower(json_encode($s['answers'] ?? [])), strtolower($search))));
+        }
+        $total = count($all);
+        $slice = array_slice($all, ($page - 1) * $perPage, $perPage);
+
+        return [$slice, $total];
+    }
+
     private function resolveForm(mixed $identifier): ?object
     {
         if ($identifier instanceof Form) {
@@ -234,12 +376,32 @@ class FormController extends Controller
     {
         $schema['fields'] = $schema['fields'] ?? [];
         foreach ($schema['fields'] as $index => $field) {
-            $schema['fields'][$index]['id'] = $field['id'] ?? 'field_' . ($index + 1);
-            $schema['fields'][$index]['key'] = $field['key'] ?? $field['id'] ?? 'field_' . ($index + 1);
+            $key = $this->normalizeFieldKey(
+                (string) ($field['key'] ?? $field['id'] ?? ''),
+                $index + 1
+            );
+
+            $schema['fields'][$index]['id']       = $field['id'] ?? ('field_' . ($index + 1));
+            $schema['fields'][$index]['key']      = $key;
+            $schema['fields'][$index]['type']     = $field['type'] ?? 'text';
+            $schema['fields'][$index]['label']    = $field['label'] ?? $field['lable'] ?? $key;
             $schema['fields'][$index]['required'] = (bool) ($field['required'] ?? false);
+            // Preserve optional properties verbatim
+            foreach (['placeholder','helpText','defaultValue','options','maxRating','validation'] as $prop) {
+                if (array_key_exists($prop, $field)) {
+                    $schema['fields'][$index][$prop] = $field[$prop];
+                }
+            }
         }
 
         return $schema;
+    }
+
+    private function normalizeFieldKey(string $value, int $index): string
+    {
+        $key = trim($value);
+
+        return $key !== '' ? $key : 'field_' . $index;
     }
 
     private function normalizeStoredForm(mixed $form): object

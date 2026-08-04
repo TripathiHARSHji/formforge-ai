@@ -14,6 +14,7 @@ return new class extends Migration
             $table->json('answers');
             $table->timestamps();
 
+            // Most common query: all submissions for a form ordered by date
             $table->index(['form_id', 'created_at']);
         });
     }
