@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\GenerateFormSchemaJob;
 use App\Models\Form;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class FormBuilderTest extends TestCase
@@ -93,13 +95,21 @@ class FormBuilderTest extends TestCase
         $this->assertDatabaseHas('forms', ['title' => 'Volunteer Signup']);
     }
 
-    public function test_ai_generation_can_return_a_schema_from_prompt(): void
+    public function test_duplicate_ai_generation_requests_reuse_the_existing_active_job(): void
     {
-        $response = $this->post('/ai/generate', [
+        Queue::fake();
+
+        $first = $this->post('/ai/generate', [
             'prompt' => 'Internship application with phone, email and resume upload',
         ]);
 
-        $response->assertOk();
-        $this->assertNotEmpty($response->json('schema.fields'));
+        $second = $this->post('/ai/generate', [
+            'prompt' => 'Internship application with phone, email and resume upload',
+        ]);
+
+        $first->assertStatus(202);
+        $second->assertStatus(200);
+        $this->assertDatabaseCount('ai_generation_logs', 1);
+        Queue::assertPushed(GenerateFormSchemaJob::class, 1);
     }
 }

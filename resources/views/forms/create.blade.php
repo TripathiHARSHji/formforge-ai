@@ -211,6 +211,10 @@ const S = {
     selId: null,
     tab: 'basic',
     aiPolling: null,
+    aiPollTimer: null,
+    aiPollInFlight: false,
+    aiActiveLogId: null,
+    aiBusy: false,
 };
 
 // ── Utils ──────────────────────────────────────────────────────
@@ -249,15 +253,17 @@ function setAiBusy(isBusy, message = 'Waiting in queue...') {
     const text = $('ai-loader-text');
     const btnAi = $('btn-ai');
 
+    S.aiBusy = !!isBusy;
+
     if (btnAi) {
-        btnAi.disabled = !!isBusy;
-        btnAi.classList.toggle('opacity-60', !!isBusy);
-        btnAi.classList.toggle('cursor-not-allowed', !!isBusy);
+        btnAi.disabled = S.aiBusy;
+        btnAi.classList.toggle('opacity-60', S.aiBusy);
+        btnAi.classList.toggle('cursor-not-allowed', S.aiBusy);
     }
 
     if (!overlay || !text) return;
 
-    if (isBusy) {
+    if (S.aiBusy) {
         text.textContent = message;
         overlay.classList.remove('hidden');
         overlay.classList.add('flex');
@@ -329,6 +335,11 @@ async function runAi(promptText) {
         return;
     }
 
+    if (S.aiBusy || S.aiActiveLogId) {
+        showToast('AI generation is already running.');
+        return;
+    }
+
     setAiStatus('Queueing AI job...');
     setAiBusy(true, 'Queueing AI job...');
     $('btn-ai-run').disabled = true;
@@ -357,12 +368,14 @@ async function runAi(promptText) {
             throw new Error('Missing AI log ID.');
         }
 
+        S.aiActiveLogId = String(logId);
         closeAiPanel();
-        showToast('AI job queued. Generating schema...', true);
-        setAiStatus('AI status: queued');
-        setAiBusy(true, 'AI is queued. Waiting for worker...');
+        showToast(payload.reused ? 'AI generation is already in progress.' : 'AI job queued. Generating schema...', true);
+        setAiStatus('AI status: ' + (payload.status || 'queued'));
+        setAiBusy(true, payload.reused ? 'AI is already processing your request...' : 'AI is queued. Waiting for worker...');
         startAiPolling(logId);
     } catch (err) {
+        stopAiPolling();
         setAiBusy(false);
         setAiStatus('AI status: failed', 'error');
         showToast(err.message || 'AI request failed.');
@@ -371,19 +384,35 @@ async function runAi(promptText) {
     }
 }
 
-function startAiPolling(logId) {
+function stopAiPolling() {
     if (S.aiPolling) {
         clearInterval(S.aiPolling);
         S.aiPolling = null;
     }
+    if (S.aiPollTimer) {
+        clearTimeout(S.aiPollTimer);
+        S.aiPollTimer = null;
+    }
+    S.aiPollInFlight = false;
+    S.aiActiveLogId = null;
+}
+
+function startAiPolling(logId) {
+    stopAiPolling();
+    S.aiActiveLogId = String(logId);
 
     const startedAt = Date.now();
 
     const poll = async () => {
+        if (!S.aiActiveLogId || S.aiPollInFlight) {
+            return;
+        }
+
+        S.aiPollInFlight = true;
+
         try {
             if (Date.now() - startedAt > AI_MAX_WAIT_MS) {
-                clearInterval(S.aiPolling);
-                S.aiPolling = null;
+                stopAiPolling();
                 setAiBusy(false);
                 setAiStatus('AI status: timeout', 'warn');
                 showToast('AI is taking too long. Start queue worker: php artisan queue:work');
@@ -406,8 +435,7 @@ function startAiPolling(logId) {
             }
 
             if (payload.status === 'completed') {
-                clearInterval(S.aiPolling);
-                S.aiPolling = null;
+                stopAiPolling();
                 setAiBusy(false);
 
                 if (!payload.schema || !Array.isArray(payload.schema.fields)) {
@@ -426,27 +454,32 @@ function startAiPolling(logId) {
                     setAiStatus('AI status: completed', 'ok');
                     showToast('AI schema applied to canvas.', true);
                 }
+                return;
             }
 
             if (payload.status === 'failed') {
-                clearInterval(S.aiPolling);
-                S.aiPolling = null;
+                stopAiPolling();
                 setAiBusy(false);
                 setAiStatus('AI status: failed', 'error');
                 const firstError = Array.isArray(payload.retry_errors) ? payload.retry_errors[0] : null;
                 showToast(payload.error || firstError || 'AI generation failed.');
+                return;
             }
+
+            S.aiPollTimer = setTimeout(() => {
+                poll();
+            }, AI_POLL_INTERVAL_MS);
         } catch (err) {
-            clearInterval(S.aiPolling);
-            S.aiPolling = null;
+            stopAiPolling();
             setAiBusy(false);
             setAiStatus('AI status: failed', 'error');
             showToast(err.message || 'AI polling failed.');
+        } finally {
+            S.aiPollInFlight = false;
         }
     };
 
     poll();
-    S.aiPolling = setInterval(poll, AI_POLL_INTERVAL_MS);
 }
 
 function makeField(type) {

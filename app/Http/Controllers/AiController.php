@@ -18,6 +18,27 @@ class AiController extends Controller
         ]);
 
         try {
+            $query = AiGenerationLog::query()
+                ->whereIn('status', ['queued', 'processing'])
+                ->where('prompt', $data['prompt']);
+
+            if (! empty($data['form_id'])) {
+                $query->where('form_id', $data['form_id']);
+            } else {
+                $query->whereNull('form_id');
+            }
+
+            $activeLog = $query->latest('created_at')->first();
+            if ($activeLog) {
+                return response()->json([
+                    'message' => 'AI generation already in progress.',
+                    'log_id' => $activeLog->id,
+                    'status' => $activeLog->status,
+                    'poll_url' => route('ai.status', ['log' => $activeLog->id]),
+                    'reused' => true,
+                ], 200);
+            }
+
             $log = AiGenerationLog::create([
                 'form_id' => $data['form_id'] ?? null,
                 'prompt' => $data['prompt'],
