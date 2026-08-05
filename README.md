@@ -1,7 +1,7 @@
 ﻿# FormForge AI
 
 ## Live demo
-- URL: http://localhost:8000
+- URL: https://formforge-ai-production.up.railway.app
 - Demo credentials: none required for the demo flow
 
 ## What is included
