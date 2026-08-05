@@ -1,95 +1,208 @@
 ﻿# FormForge AI
 
-## Live demo
-- URL: https://formforge-ai-production.up.railway.app
-- Demo credentials: none required for the demo flow
+Laravel-based form builder with manual schema editing, public form links, submissions export, queued Gemini-powered form generation/editing, and document import entry points.
 
-## What is included
-- Manual form creation with schema-driven fields
-- Public fill URL per form
-- Server-side submission handling and CSV export
-- Queued AI-assisted schema generation and AI editing for existing forms
-- Document import workflow for Word and Excel uploads
-- Forms index page with View, Edit, and AI Edit actions
+## Live Demo
 
-## Setup
-1. Copy `.env.example` to `.env` and configure database credentials.
-2. Set `GEMINI_API_KEY` in `.env`.
-3. Run `composer install`.
-4. Run `php artisan migrate --seed`.
-5. Run `php artisan queue:work` (required for non-blocking AI generation).
-6. Run `php artisan serve`.
+- https://formforge-ai-production.up.railway.app/
 
-## Environment variables
-- `DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
+## Setup Steps
+
+### Local setup
+1. Copy `.env.example` to `.env`.
+2. Configure database credentials.
+3. Install dependencies:
+   - `composer install`
+   - `npm install` (only if you are modifying frontend assets)
+4. Generate app key: `php artisan key:generate`
+5. Run migrations: `php artisan migrate --seed`
+6. Start queue worker (required for AI generation): `php artisan queue:work --sleep=1 --tries=2 --timeout=120`
+7. Start app: `php artisan serve`
+
+### Railway / production setup
+1. Set all required environment variables (see next section).
+2. Run migrations on deploy: `php artisan migrate --force`
+3. Run two processes:
+   - Web process: serves Laravel app
+   - Worker process: `php artisan queue:work --sleep=1 --tries=2 --timeout=120`
+4. After env updates, clear cached config:
+   - `php artisan optimize:clear`
+   - `php artisan queue:restart`
+
+Without a running worker, AI requests remain queued and frontend keeps polling `/ai/logs/{id}`.
+
+## Environment Variables
+
+### Required
+- `APP_KEY`
 - `APP_URL`
+- `DB_CONNECTION`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_DATABASE`
+- `DB_USERNAME`
+- `DB_PASSWORD`
 - `QUEUE_CONNECTION` (recommended: `database`)
 - `GEMINI_API_KEY`
+
+### Recommended AI settings
 - `GEMINI_MODEL` (default: `gemini-2.5-flash`)
-- After changing Gemini env values, run `php artisan optimize:clear` and `php artisan queue:restart`
+- `GEMINI_FALLBACK_MODELS` (comma-separated model list)
+- `GEMINI_SSL_VERIFY` (`true` by default)
+- `GEMINI_CA_BUNDLE` (optional custom CA path)
 
-## AI generation and editing flow
-1. User enters an AI prompt in form builder (new form or existing form edit).
-2. `POST /ai/generate` stores a `queued` log in `ai_generation_logs` and dispatches `GenerateFormSchemaJob`.
-3. Frontend polls `GET /ai/logs/{id}` for status (`queued`, `processing`, `completed`, `failed`).
-4. Job calls Gemini, validates and repairs output, retries up to 3 attempts, then applies fallback if needed.
-5. Only schema-valid output is returned to UI and persisted (when editing existing forms).
-6. `ai_generation_logs` stores model, tokens, latency, attempts, and retry/fallback metadata.
+### Useful optional settings
+- `APP_ENV`
+- `APP_DEBUG`
+- `LOG_CHANNEL`
+- `SESSION_DRIVER`
 
-## Prompt strategy (documented contract)
-### System prompt
-- Force JSON-only output (no prose / markdown).
-- Define strict schema contract and allowed field types.
-- Require sensible labels/placeholders/validations.
-- Require unique keys for all non-heading fields.
+## Architecture Overview
 
-### User prompt mode
-- Create mode: natural-language prompt only.
-- Edit mode: natural-language instruction plus existing schema JSON so the model modifies current form instead of recreating blindly.
+### Runtime components
+1. Laravel web app for UI and API routes.
+2. Database (forms, submissions, versions, AI logs, imports, jobs).
+3. Queue worker to process AI schema generation jobs.
+4. Gemini API for model inference.
+5. File storage for imports and upload artifacts.
 
-### Output contract
-The model must return:
-- `title`: string
-- `description`: optional string
-- `fields`: array of field objects
+### High-level flow
+1. User starts create/edit form in builder UI.
+2. UI submits prompt to `POST /ai/generate`.
+3. App creates `ai_generation_logs` row and dispatches `GenerateFormSchemaJob`.
+4. UI polls `GET /ai/logs/{id}` until status becomes `completed` or `failed`.
+5. Worker calls Gemini, normalizes and validates schema, applies fallback when necessary.
+6. On edit mode, app snapshots previous schema in `form_versions` and updates `forms`.
 
-Field object shape:
-- `id`: string
-- `type`: one of `text`, `textarea`, `number`, `email`, `phone`, `date`, `file`, `rating`, `dropdown`, `radio`, `checkbox`, `heading`, `url`
-- `label`: string
-- `key`: required for non-heading
-- `required`: boolean
-- optional: `placeholder`, `helpText`, `defaultValue`, `options`, `maxRating`, `validation`
+## Schema / ERD Summary
 
-## Handling malformed JSON and hallucinations
-- Parse direct JSON, fenced JSON, or first JSON object in mixed output.
-- Attempt lightweight repair (e.g., remove trailing commas, normalize smart quotes).
-- Normalize field types and map hallucinated aliases:
-  - `tel` -> `phone`
-  - `select` -> `dropdown`
-  - `short_text` -> `text`
-  - `long_text` -> `textarea`
-  - `multiple_choice` -> `radio`
-  - `multi_select` -> `checkbox`
-  - unknown type -> `text`
-- Enforce unique keys and minimum options for choice fields.
-- Never persist broken schemas.
+### Core tables
+- `forms`: form metadata and latest schema
+- `form_versions`: historical schema snapshots
+- `form_submissions`: submitted answers per form
+- `ai_generation_logs`: queued/processing/completed/failed AI runs
+- `form_imports`: uploaded import source tracking
+- `jobs`, `failed_jobs`: queue infrastructure
 
-## Retry and fallback strategy
-- Up to 3 model attempts.
-- Each retry includes the previous validation error in prompt context.
-- If all attempts fail:
-  - edit mode fallback: normalized existing schema
-  - create mode fallback: deterministic minimal valid schema inferred from prompt keywords
+### Relationship summary
+- One `forms` row has many `form_versions` rows.
+- One `forms` row has many `form_submissions` rows.
+- One `forms` row can have many `ai_generation_logs` rows.
+- One `forms` row can have many `form_imports` rows.
 
-## Queued non-blocking behavior
-- AI generation is never performed inside the request-response cycle.
-- UI receives immediate `202 Accepted` and polls status.
-- Queue worker performs LLM call and updates status/log metadata.
+```mermaid
+erDiagram
+    forms ||--o{ form_versions : has
+    forms ||--o{ form_submissions : has
+    forms ||--o{ ai_generation_logs : has
+    forms ||--o{ form_imports : has
 
-## Data model summary
-- `forms`: core form definition and public UUID
-- `form_versions`: version snapshots before manual/AI edits
-- `form_submissions`: answer payloads per form submission
-- `ai_generation_logs`: prompt, model, token, latency, status, metadata
-- `form_imports`: import metadata and source files
+    forms {
+        bigint id PK
+        string title
+        text description
+        json schema
+        uuid public_uuid UK
+        string status
+        timestamps
+    }
+
+    form_versions {
+        bigint id PK
+        bigint form_id FK
+        json schema
+        string note
+        timestamps
+    }
+
+    form_submissions {
+        bigint id PK
+        bigint form_id FK
+        json answers
+        timestamps
+    }
+
+    ai_generation_logs {
+        bigint id PK
+        bigint form_id FK nullable
+        text prompt
+        string model
+        uint tokens_used
+        uint latency_ms
+        string status
+        json metadata
+        timestamps
+    }
+
+    form_imports {
+        bigint id PK
+        bigint form_id FK nullable
+        string source_type
+        string file_path
+        string status
+        json summary
+        json metadata
+        timestamps
+    }
+```
+
+## API Endpoints
+
+### Form routes
+- `GET /` - Landing page.
+- `GET /forms` - List forms.
+- `GET /forms/create` - Open form builder.
+- `POST /forms` - Create form.
+- `GET /forms/{form}` - Show form and submissions.
+- `GET /forms/{form}/edit` - Edit form in builder.
+- `PUT /forms/{form}` - Update form.
+- `GET /forms/{publicUuid}/fill` - Public fill page.
+- `POST /forms/{publicUuid}/submit` - Submit public answers.
+- `GET /forms/{form}/export?format=json|csv` - Export submissions.
+
+### AI routes
+- `POST /ai/generate`
+  - Body: `{ prompt: string, form_id?: number }`
+  - Behavior:
+    - Returns `202` when a new job is queued.
+    - Returns `200` with `reused=true` when an active identical request already exists.
+- `GET /ai/logs/{log}`
+  - Returns AI status payload including `status`, `schema`, `fallback_used`, `retry_errors`, and telemetry fields.
+
+### Import route
+- `POST /imports`
+  - Accepts `.docx` or `.xlsx`
+  - Creates imported form record and import log entry.
+
+## AI Prompt Strategy
+
+### Prompt contract
+1. System prompt forces JSON-only output and fixed schema shape.
+2. Allowed types are restricted to: `text`, `textarea`, `number`, `email`, `phone`, `date`, `file`, `rating`, `dropdown`, `radio`, `checkbox`, `heading`, `url`.
+3. Edit mode includes existing schema in context so AI modifies instead of rebuilding from scratch.
+
+### Reliability strategy
+1. AI output is parsed from raw text and repaired when possible.
+2. Schema is normalized (field types, keys, defaults, options).
+3. Schema is validated before persist/use.
+4. Retries run up to 2 attempts per candidate model.
+5. If all attempts fail, deterministic fallback returns a valid schema.
+
+### Model fallback strategy
+1. Start from configured model (`GEMINI_MODEL`).
+2. Merge configured fallback list and discovered generate-capable models.
+3. Skip unavailable models quickly and continue to next candidate.
+
+## Known Limitations
+
+1. Queue worker is mandatory for non-sync AI flow; without it, UI keeps polling and AI appears stuck.
+2. Import workflow currently seeds a basic placeholder schema; deep DOCX/XLSX semantic extraction is not implemented yet.
+3. Fallback file storage path exists for form/submission resilience, which can diverge from database state if DB intermittently fails.
+4. AI quality depends on model availability and provider-side latency/rate limits.
+5. Current routes are demo-oriented and do not enforce auth/authorization boundaries.
+
+## Notes for Operators
+
+1. If AI works locally but not on Railway, verify worker process and env parity first.
+2. For queue health checks, inspect `jobs`, `failed_jobs`, and app logs.
+3. Restart workers after config/env changes: `php artisan queue:restart`.
