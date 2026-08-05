@@ -46,6 +46,36 @@ class FormBuilderTest extends TestCase
         ]);
     }
 
+    public function test_form_submission_state_is_scoped_to_the_current_session(): void
+    {
+        $response = $this->post('/forms', [
+            'title' => 'Volunteer Signup',
+            'description' => 'Volunteer sign-up form',
+            'schema' => [
+                'title' => 'Volunteer Signup',
+                'fields' => [
+                    ['id' => 'name', 'type' => 'text', 'label' => 'Name', 'key' => 'name', 'required' => true],
+                ],
+            ],
+        ]);
+
+        $response->assertRedirect();
+
+        $form = Form::latest()->first();
+        $this->assertNotNull($form);
+
+        $this->post('/forms/' . $form->public_uuid . '/submit', [
+            'answers' => [
+                'name' => 'Ada Lovelace',
+            ],
+        ])->assertRedirect();
+
+        $this->get('/forms/' . $form->public_uuid . '/fill')->assertOk()->assertSee('Response submitted');
+
+        session()->flush();
+        $this->get('/forms/' . $form->public_uuid . '/fill')->assertOk()->assertSee('Submit');
+    }
+
     public function test_form_can_be_created_from_json_schema_string(): void
     {
         $response = $this->post('/forms', [

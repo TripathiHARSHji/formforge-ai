@@ -8,6 +8,10 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /app
 
+ENV SESSION_DRIVER=database
+ENV SESSION_CONNECTION=mysql
+ENV SESSION_TABLE=sessions
+
 COPY . .
 
 RUN composer install --optimize-autoloader --no-interaction --no-scripts
