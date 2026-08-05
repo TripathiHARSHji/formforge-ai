@@ -104,7 +104,8 @@ erDiagram
         json schema
         uuid public_uuid UK
         string status
-        timestamps
+        datetime created_at
+        datetime updated_at
     }
 
     form_versions {
@@ -112,37 +113,41 @@ erDiagram
         bigint form_id FK
         json schema
         string note
-        timestamps
+        datetime created_at
+        datetime updated_at
     }
 
     form_submissions {
         bigint id PK
         bigint form_id FK
         json answers
-        timestamps
+        datetime created_at
+        datetime updated_at
     }
 
     ai_generation_logs {
         bigint id PK
-        bigint form_id FK nullable
+        bigint form_id FK
         text prompt
         string model
         uint tokens_used
         uint latency_ms
         string status
         json metadata
-        timestamps
+        datetime created_at
+        datetime updated_at
     }
 
     form_imports {
         bigint id PK
-        bigint form_id FK nullable
+        bigint form_id FK
         string source_type
         string file_path
         string status
         json summary
         json metadata
-        timestamps
+        datetime created_at
+        datetime updated_at
     }
 ```
 
