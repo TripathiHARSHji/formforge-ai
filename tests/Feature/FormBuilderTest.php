@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\GenerateFormSchemaJob;
 use App\Models\Form;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class FormBuilderTest extends TestCase
@@ -46,6 +48,36 @@ class FormBuilderTest extends TestCase
         ]);
     }
 
+    public function test_form_submission_state_is_scoped_to_the_current_session(): void
+    {
+        $response = $this->post('/forms', [
+            'title' => 'Volunteer Signup',
+            'description' => 'Volunteer sign-up form',
+            'schema' => [
+                'title' => 'Volunteer Signup',
+                'fields' => [
+                    ['id' => 'name', 'type' => 'text', 'label' => 'Name', 'key' => 'name', 'required' => true],
+                ],
+            ],
+        ]);
+
+        $response->assertRedirect();
+
+        $form = Form::latest()->first();
+        $this->assertNotNull($form);
+
+        $this->post('/forms/' . $form->public_uuid . '/submit', [
+            'answers' => [
+                'name' => 'Ada Lovelace',
+            ],
+        ])->assertRedirect();
+
+        $this->get('/forms/' . $form->public_uuid . '/fill')->assertOk()->assertSee('Response submitted');
+
+        session()->flush();
+        $this->get('/forms/' . $form->public_uuid . '/fill')->assertOk()->assertSee('Submit');
+    }
+
     public function test_form_can_be_created_from_json_schema_string(): void
     {
         $response = $this->post('/forms', [
@@ -63,13 +95,21 @@ class FormBuilderTest extends TestCase
         $this->assertDatabaseHas('forms', ['title' => 'Volunteer Signup']);
     }
 
-    public function test_ai_generation_can_return_a_schema_from_prompt(): void
+    public function test_duplicate_ai_generation_requests_reuse_the_existing_active_job(): void
     {
-        $response = $this->post('/ai/generate', [
+        Queue::fake();
+
+        $first = $this->post('/ai/generate', [
             'prompt' => 'Internship application with phone, email and resume upload',
         ]);
 
-        $response->assertOk();
-        $this->assertNotEmpty($response->json('schema.fields'));
+        $second = $this->post('/ai/generate', [
+            'prompt' => 'Internship application with phone, email and resume upload',
+        ]);
+
+        $first->assertStatus(202);
+        $second->assertStatus(200);
+        $this->assertDatabaseCount('ai_generation_logs', 1);
+        Queue::assertPushed(GenerateFormSchemaJob::class, 1);
     }
 }

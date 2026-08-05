@@ -291,6 +291,8 @@ class FormController extends Controller
             $this->persistSubmissionFallback($form, $answers);
         }
 
+        $this->rememberSubmissionInSession($form, $answers);
+
         return redirect()->route('forms.fill', ['publicUuid' => $form->public_uuid])->with('status', 'Submission received.');
     }
 
@@ -450,14 +452,45 @@ class FormController extends Controller
 
     private function getSubmissionState(object $form): array
     {
-        $submissions = $this->loadSubmissionsForForm($form);
-        $latestSubmission = $submissions[0] ?? null;
+        $sessionSubmission = $this->loadSubmissionFromSession($form);
+        if ($sessionSubmission !== null) {
+            return [
+                'has_submission' => true,
+                'submission_count' => 1,
+                'latest_submission' => $sessionSubmission,
+            ];
+        }
 
         return [
-            'has_submission' => ! empty($submissions),
-            'submission_count' => count($submissions),
-            'latest_submission' => $latestSubmission,
+            'has_submission' => false,
+            'submission_count' => 0,
+            'latest_submission' => null,
         ];
+    }
+
+    private function loadSubmissionFromSession(object $form): ?array
+    {
+        $payload = session()->get($this->submissionSessionKey($form));
+
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        return $payload;
+    }
+
+    private function rememberSubmissionInSession(object $form, array $answers): void
+    {
+        session()->put($this->submissionSessionKey($form), [
+            'form_id' => $form->id,
+            'answers' => $answers,
+            'submitted_at' => now()->toIso8601String(),
+        ]);
+    }
+
+    private function submissionSessionKey(object $form): string
+    {
+        return 'form_submission.' . $form->id;
     }
 
     private function loadSubmissionsForForm(object $form): array
